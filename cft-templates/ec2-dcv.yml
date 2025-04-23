@@ -388,6 +388,7 @@ Resources:
       InstanceType: !Ref 'InstanceType'
       SecurityGroups: [!Ref 'InstanceSecurityGroup']
       KeyName: !Ref 'KeyPair'
+      AvailabilityZone: !Ref AvailabilityZone
       ImageId: "{{resolve:ssm:/RL/RG/StandardCatalog/linux-nice-dcv-ami}}"
       IamInstanceProfile: !Ref InstanceProfile
       BlockDeviceMappings:
@@ -436,4 +437,4 @@ Outputs:
     Value: '8443'
   AvailabilityZone: 
     Description: AvailabilityZone of newly created EC2 instance
-    Value: !GetAtt [EC2Instance, AvailabilityZone]
+    Value: !Ref AvailabilityZone

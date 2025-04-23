@@ -188,6 +188,7 @@ Resources:
     Properties:
       ImageId : '{{resolve:ssm:/RL/RG/StandardCatalog/VS-Code}}'
       InstanceType: !Ref 'InstanceType'
+      AvailabilityZone: !Ref AvailabilityZone
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -270,4 +271,4 @@ Outputs:
     Value: '443'
   AvailabilityZone: 
     Description: AvailabilityZone of newly created VS-Code EC2Instance
-    Value: !GetAtt [EC2Instance, AvailabilityZone]  
+    Value: !Ref AvailabilityZone
