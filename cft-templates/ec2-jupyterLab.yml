@@ -201,6 +201,7 @@ Resources:
       KeyName: !Ref 'KeyPair'
       IamInstanceProfile: !Ref InstanceProfile
       PropagateTagsToVolumeOnCreation: true
+      AvailabilityZone: !Ref AvailabilityZone
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -272,4 +273,4 @@ Outputs:
     Value: '443'
   AvailabilityZone: 
     Description: AvailabilityZone of newly created JupyterLab EC2Instance
-    Value: !GetAtt [EC2Instance, AvailabilityZone]  
+    Value: !Ref AvailabilityZone

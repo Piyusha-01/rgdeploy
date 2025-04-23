@@ -153,6 +153,7 @@ Resources:
     Properties:
       ImageId : '{{resolve:ssm:/RL/RG/StandardCatalog/RStudio}}'
       InstanceType: !Ref 'InstanceType'
+      AvailabilityZone: !Ref AvailabilityZone
       SecurityGroups: [!Ref 'RstudioEC2SecurityGroup']
       KeyName: !Ref 'KeyPair'
       IamInstanceProfile: !Ref InstanceProfile
@@ -209,4 +210,4 @@ Outputs:
     Value: '443'
   AvailabilityZone: 
     Description: AvailabilityZone of newly created Rstudio EC2Instance
-    Value: !GetAtt [RstudioEC2Instance, AvailabilityZone]  
+    Value: !Ref AvailabilityZone
