@@ -166,8 +166,16 @@ Resources:
                 access_token=`uuidgen`             
                 `PASSWORD=$access_token docker-compose up -d`
                 sleep 5
-                instance_id=$(curl -s "http://169.254.169.254/latest/meta-data/instance-id")
-                instance_region=$(curl -s "http://169.254.169.254/latest/meta-data/placement/region")               
+                # Get the session token
+                TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+                
+                # Get the region to build the parameter name
+                instance_region=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+                echo "Retrieved region ${region} from metadata service"
+                
+                # Get the instance id to build the parameter name
+                instance_id=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+                echo "Retrieved instance_id $instance_id from metadata service"
                 aws ssm put-parameter --name "/RL/RG/vs-code/auth-token/$instance_id" --value $access_token --region $instance_region --type SecureString --overwrite 
                 echo "Stored vscode token in SSM"
             '/var/log/vscode.log':
