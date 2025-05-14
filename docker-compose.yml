@@ -62,7 +62,7 @@ services:
     command: ["./app/scheduler/app.js"]
 
   notificationsink:
-    image: relevancelab/aws-notificationsink:1.19.0_b2
+    image: relevancelab/aws-notificationsink:1.22.0_b1
     secrets:
       - source: sp2prod-config.json
         target: /opt/app/config/config.json
