@@ -47,7 +47,7 @@ if [ ! -z $tgarn ]; then
 	aws elbv2 register-targets --targets "Id=$ec2instanceid,Port=$port" --target-group-arn "$tgarn"
 fi
 echo "Calling swarm init will respond with error if this node is already part of a swarm"
-docker swarm init
+/usr/local/sbin/swarm_init.sh
 
 echo "Creating secrets"
 fixsecrets.sh
