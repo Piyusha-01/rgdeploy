@@ -1,8 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::SecretsManager-2020-07-23
 Description: >
   Unified CloudFormation Template for Research Gateway.
   Provisions ALB, Cognito, DocumentDB, EC2, and all required resources in a single stack.
   VPC and subnets must be created externally and passed as parameters.
+  This template now accepts an existing Target Group ARN as a parameter.
 
 Parameters:
   AMIId:
@@ -42,6 +44,9 @@ Parameters:
   RGUrl:
     Description: URL at which Research Gateway will be accessed
     Type: String
+  RGApplicationLoadBalancer:
+    Type: String
+    Description: "ARN of the existing Application Load Balancer"
   CertificateArn:
     Description: ACM Certificate ARN for SSL (optional)
     Type: String
@@ -49,9 +54,23 @@ Parameters:
   HostedZoneId:
     Description: Route53 Hosted Zone ID for the RG domain (required for config generation)
     Type: String
+  RGTargetGroupArn:
+    Description: The ARN of the existing Target Group for the Research Gateway EC2 instance
+    Type: String
+  BaseAccountPolicyName:
+    Description: Name for RG Portal Base Account Policy
+    Type: String
 
 Conditions:
-  UseSSL: !Not [!Equals [!Ref CertificateArn, ""]]
+  UseSSL:
+    Fn::Not:
+      - Fn::Equals:
+          - !Ref CertificateArn
+          - ""
+  DoNotUseSSL:
+    Fn::Equals:
+      - !Ref CertificateArn
+      - ""
 
 Resources:
 
@@ -61,7 +80,6 @@ Resources:
     Properties:
       Description: The role used by the EC2 Instance running the portal
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -77,6 +95,7 @@ Resources:
         - arn:aws:iam::aws:policy/IAMReadOnlyAccess
         - arn:aws:iam::aws:policy/AmazonRoute53FullAccess
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - Ref: ResearchGatewayRolePolicy
       Path: /
 
   ResearchGatewayInstanceProfile:
@@ -85,6 +104,42 @@ Resources:
       Path: /
       Roles:
         - Ref: RGPortalRole
+  ResearchGatewayRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Ref BaseAccountPolicyName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "InstancePermissions"
+            Effect: Allow
+            Action:
+              - ec2:DescribeImages
+              - ec2:CopyImage
+              - ec2:ModifyImageAttribute
+              - ec2:CreateNetworkInterface
+              - elasticloadbalancing:RegisterTargets
+              - sts:AssumeRole
+              - kms:Decrypt
+            Resource: "*"
+          - Sid: "RoleRelatedPermissions"
+            Effect: Allow
+            Action:
+              - iam:AttachRolePolicy
+              - iam:CreateRole
+              - iam:DetachRolePolicy
+            Resource: 
+              - !Sub "arn:aws:iam::${AWS::AccountId}:role/${BaseAccountPolicyName}"
+          - Sid: "PolicyRelatedPermissions"
+            Effect: Allow
+            Action:
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicy
+              - iam:DeletePolicyVersion
+              - iam:UpdateAssumeRolePolicy
+            Resource: 
+              - "arn:aws:iam::*:policy/RG-Cross-Account-Policy*"
 
   # EC2 Instance for Research Gateway Portal
   RGEC2Instance:
@@ -133,13 +188,13 @@ Resources:
             ${CognitoUserPool} \
             ${CognitoUserPoolClient} \
             ${CFTBucketName} \
-            ${APPUSER} \
-            ${APPUSERPWD} \
-            ${RUNID} \
+            $$APPUSER \
+            $$APPUSERPWD \
+            $$RUNID \
             ${RGUrl} \
-            ${REGION} \
-            ${ROLE_NAME} \
-            ${ACCT_ID} \
+            $$REGION \
+            $$ROLE_NAME \
+            $$ACCT_ID \
             ${HostedZoneId} \
             ${DocDBClusterRotationSecret}
           # Copy generated config.tar.gz to working dir
@@ -148,7 +203,7 @@ Resources:
           /home/ubuntu/updatescripts.sh
           fixconfigs.sh
           fixdocdb.sh ${DBCluster.Endpoint} ${Environment}-cc rguser '$(aws secretsmanager get-secret-value --secret-id ${DocDBClusterRotationSecret} --region ${AWS::Region} --query SecretString --output text | jq -r .password)' ${RGUrl}
-          start_server.sh ${RGUrl} ${RGTargetGroup}
+          start_server.sh ${RGUrl} ${RGTargetGroupArn} 
           /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource RGEC2Instance --region ${AWS::Region}
     CreationPolicy:
       ResourceSignal:
@@ -206,7 +261,7 @@ Resources:
 
   # DocumentDB Secret
   DocDBClusterRotationSecret:
-    Type: 'AWS::SecretsManager::Secret'
+    Type: "AWS::SecretsManager::Secret"
     Properties:
       Name: !Sub "RG-DocDB-Secret-${AWS::StackName}"
       Description: secrets for DocumentDB
@@ -214,7 +269,7 @@ Resources:
         SecretStringTemplate: '{"username": "rguser"}'
         GenerateStringKey: "password"
         PasswordLength: 16
-        ExcludeCharacters: '"@/\''
+        ExcludeCharacters: '"@/\'
       Tags:
         - Key: Name
           Value: !Sub "RG-DocDB-Secret-${AWS::StackName}"
@@ -271,19 +326,16 @@ Resources:
     DependsOn: SecretDocDBClusterAttachment
     Properties:
       SecretId: !Ref DocDBClusterRotationSecret
+      # RotationRules should be here, not under HostedRotationLambda
+      RotationRules:
+        Duration: 6h
+        ScheduleExpression: "rate(30 days)"
       HostedRotationLambda:
         RotationType: MongoDBSingleUser
         RotationLambdaName: MongoDBSingleUser
         VpcSecurityGroupIds:
-          - !GetAtt DocumentDBSecurityGroup.GroupId
-        VpcSubnetIds:
-          Fn::Join:
-            - ","
-            - - !Ref PrivateSubnet1
-              - !Ref PrivateSubnet2
-      RotationRules:
-        Duration: 6h
-        ScheduleExpression: 'rate(30 days)'
+           !Join [",", [!GetAtt DocumentDBSecurityGroup.GroupId]]
+        VpcSubnetIds: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -663,94 +715,76 @@ Resources:
           CidrIp: 0.0.0.0/0
 
   # Application Load Balancer
-  RGApplicationLoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Name: "RG-Application-Load-Balancer"
-      Scheme: "internet-facing"
-      Type: "application"
-      Subnets:
-        - !Ref PublicSubnet1
-        - !Ref PublicSubnet2
-        - !Ref PublicSubnet3
-      SecurityGroups:
-        - !GetAtt RGInstanceSecurityGroup.GroupId
-      IpAddressType: "ipv4"
+  # RGApplicationLoadBalancer:
+  #   Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+  #   Properties:
+  #     Name: !Ref LoadBalancerName
+  #     Scheme: "internet-facing"
+  #     Type: "application"
+  #     Subnets:
+  #       - !Ref PublicSubnet1
+  #       - !Ref PublicSubnet2
+  #       - !Ref PublicSubnet3
+  #     SecurityGroups:
+  #       - !GetAtt RGInstanceSecurityGroup.GroupId
+  #     IpAddressType: "ipv4"
 
-  # Target Group
-  RGTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      HealthCheckIntervalSeconds: 30
-      HealthCheckPath: "/"
-      Port: 80
-      Protocol: "HTTP"
-      HealthCheckPort: "traffic-port"
-      HealthCheckProtocol: "HTTP"
-      HealthCheckTimeoutSeconds: 5
-      UnhealthyThresholdCount: 2
-      TargetType: "instance"
-      Matcher:
-        HttpCode: "200"
-      HealthyThresholdCount: 5
-      VpcId: !Ref VPC
-      Name: "Rg-target-group-1"
-      HealthCheckEnabled: true
+  # Target Group - REMOVED: Assuming existing Target Group will be used via parameter
 
   # HTTPS Listener (if CertificateArn provided)
-  RGHTTPSListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: UseSSL
-    Properties:
-      LoadBalancerArn: !Ref RGApplicationLoadBalancer
-      Port: 443
-      Protocol: "HTTPS"
-      SslPolicy: "ELBSecurityPolicy-2016-08"
-      Certificates:
-        - CertificateArn: !Ref CertificateArn
-      DefaultActions:
-        - Order: 1
-          TargetGroupArn: !Ref RGTargetGroup
-          Type: "forward"
+  # RGHTTPSListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Condition: UseSSL
+  #   Properties:
+  #     LoadBalancerArn: !Ref RGApplicationLoadBalancer
+  #     Port: 443
+  #     Protocol: "HTTPS"
+  #     SslPolicy: "ELBSecurityPolicy-2016-08"
+  #     Certificates:
+  #       - CertificateArn: !Ref CertificateArn
+  #     DefaultActions:
+  #       - Order: 1
+  #         TargetGroupArn: !Ref RGTargetGroupArn # Updated reference here
+  #         Type: "forward"
 
-  # HTTP Listener (redirect to HTTPS if SSL enabled)
-  RGHTTPListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: UseSSL
-    Properties:
-      LoadBalancerArn: !Ref RGApplicationLoadBalancer
-      Port: 80
-      Protocol: "HTTP"
-      DefaultActions:
-        - Order: 1
-          RedirectConfig:
-            Protocol: "HTTPS"
-            Port: "443"
-            Host: "#{host}"
-            Path: "/#{path}"
-            Query: "#{query}"
-            StatusCode: "HTTP_301"
-          Type: "redirect"
+  # # HTTP Listener (redirect to HTTPS if SSL enabled)
+  # RGHTTPListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Condition: UseSSL
+  #   Properties:
+  #     LoadBalancerArn: !Ref RGApplicationLoadBalancer
+  #     Port: 80
+  #     Protocol: "HTTP"
+  #     DefaultActions:
+  #       - Order: 1
+  #         RedirectConfig:
+  #           Protocol: "HTTPS"
+  #           Port: "443"
+  #           Host: "#{host}"
+  #           Path: "/#{path}"
+  #           Query: "#{query}"
+  #           StatusCode: "HTTP_301"
+  #         Type: "redirect"
 
-  # HTTP Listener (no SSL)
-  RGHTTPListener1:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: !Not [!Condition UseSSL]
-    Properties:
-      DefaultActions:
-        - Type: "forward"
-          TargetGroupArn: !Ref RGTargetGroup
-      Port: 80
-      Protocol: "HTTP"
-      LoadBalancerArn: !Ref RGApplicationLoadBalancer
+  # # HTTP Listener (no SSL)
+  # RGHTTPListener1:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Condition: DoNotUseSSL
+  #   Properties:
+  #     DefaultActions:
+  #       - Type: "forward"
+  #         TargetGroupArn: !Ref RGTargetGroupArn # Updated reference here
+  #     Port: 80
+  #     Protocol: "HTTP"
+  #     LoadBalancerArn: !Ref RGApplicationLoadBalancer
 
 Outputs:
   ApplicationLoadBalancer:
     Description: The created load balancer
     Value: !Ref RGApplicationLoadBalancer
-  TargetGroup:
-    Description: The created TargetGroup
-    Value: !Ref RGTargetGroup
   LoadBalancerSecurityGroup:
     Description: The security group for the ALB
     Value: !Ref RGInstanceSecurityGroup
+  ResearchGatewayTargetGroupArn:
+    Description: The ARN of the Target Group used by the stack
+    Value: !Ref RGTargetGroupArn
