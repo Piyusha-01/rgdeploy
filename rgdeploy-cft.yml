@@ -7,6 +7,10 @@ Description: >
   This template now accepts an existing Target Group ARN as a parameter.
 
 Parameters:
+  RgSRC:
+    Type: String
+    Default: "/home/ubuntu/rgdeploy"
+    Description: Directory path where Research Gateway deployment files will be stored
   AMIId:
     Description: The AMI for the EC2 instance running Research Gateway
     Type: AWS::EC2::Image::Id
@@ -15,25 +19,25 @@ Parameters:
     Type: String
   VPC:
     Description: VPC for all resources
-    Type: AWS::EC2::VPC::Id
+    Type: String
   PublicSubnet1:
     Description: Public subnet 1 for ALB
-    Type: AWS::EC2::Subnet::Id
+    Type: String
   PublicSubnet2:
     Description: Public subnet 2 for ALB
-    Type: AWS::EC2::Subnet::Id
+    Type: String
   PublicSubnet3:
     Description: Public subnet 3 for ALB
-    Type: AWS::EC2::Subnet::Id
+    Type: String
   PrivateSubnet1:
     Description: Private subnet 1 for DocumentDB/EC2
-    Type: AWS::EC2::Subnet::Id
+    Type: String
   PrivateSubnet2:
     Description: Private subnet 2 for DocumentDB/EC2
-    Type: AWS::EC2::Subnet::Id
+    Type: String
   PrivateSubnet3:
     Description: Private subnet 3 for DocumentDB/EC2
-    Type: AWS::EC2::Subnet::Id
+    Type: String
   KeyPairName:
     Description: Keypair for EC2 SSH access
     Type: AWS::EC2::KeyPair::KeyName
@@ -60,6 +64,9 @@ Parameters:
   BaseAccountPolicyName:
     Description: Name for RG Portal Base Account Policy
     Type: String
+  AdminEmail:
+    Description: Email address for the first admin user
+    Type: String
 
 Conditions:
   UseSSL:
@@ -73,7 +80,6 @@ Conditions:
       - ""
 
 Resources:
-
   # Portal IAM Role
   RGPortalRole:
     Type: AWS::IAM::Role
@@ -97,7 +103,6 @@ Resources:
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
         - Ref: ResearchGatewayRolePolicy
       Path: /
-
   ResearchGatewayInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
@@ -165,45 +170,96 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
           export RG_HOME=/opt/deploy/sp2
           export RG_ENV=${Environment}
-          export RG_SRC=/home/ubuntu
+          export RG_SRC=/home/ubuntu/rgdeploy
           export S3_SOURCE="${CFTBucketName}"
           export REGION=${AWS::Region}
+          
+          mkdir -p ${RgSRC}
+
+          # Install dependencies (Ubuntu-based)
+          apt-get update
+          apt-get install -y jq curl gnupg
+
+          # Install MongoDB mongosh (v8.0 for Ubuntu 24.04)
+          wget -qO- https://www.mongodb.org/static/pgp/server-8.0.asc | tee /etc/apt/trusted.gpg.d/server-8.0.asc
+          echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+          apt-get update
+          apt-get install -y mongodb-mongosh
+          mongosh --version
+
+
           # Download required scripts
-          aws s3 cp s3://${CFTBucketName}/updatescripts.sh /home/ubuntu
-          aws s3 cp s3://${CFTBucketName}/makeconfigs.sh /home/ubuntu
-          chmod +x /home/ubuntu/updatescripts.sh
-          chmod +x /home/ubuntu/makeconfigs.sh
+          aws s3 cp s3://${CFTBucketName}/updatescripts.sh ${RgSRC}
+          aws s3 cp s3://${CFTBucketName}/makeconfigs-inplace.sh ${RgSRC}
+          chmod +x ${RgSRC}/updatescripts.sh
+          chmod +x ${RgSRC}/makeconfigs-inplace.sh
+
+          # Download and extract scripts archive
+          aws s3 cp s3://${CFTBucketName}/scripts.tar.gz "${RgSRC}"
+          aws s3 cp s3://${CFTBucketName}/config.tar.gz "${RgSRC}"
+
+          tar -xzvf ${RgSRC}/scripts.tar.gz -C ${RgSRC}
+          tar -xzvf ${RgSRC}/config.tar.gz -C ${RgSRC}
+
+          # Fix up connect-db.sh
+          sed -i "s/secret_name/${DocDBClusterRotationSecret}/g" ${RgSRC}/scripts/connect-db.sh
+          chmod +x ${RgSRC}/scripts/connect-db.sh
+
           # Generate app user, password, and runid
           APPUSER="rguser"
           APPUSERPWD=$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 24)
           RUNID=$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 4)
+
+          TOKEN=$(wget --method=PUT --header="X-aws-ec2-metadata-token-ttl-seconds: 21600" -qO- http://169.254.169.254/latest/api/token)
           # Get instance role name
-          ROLE_NAME=$(curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/ | head -n 1)
+          ROLE_NAME="$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/meta-data/iam/security-credentials/)"
           # Get account number
-          ACCT_ID=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
-          # Call makeconfigs.sh to generate config.tar.gz
-          /home/ubuntu/makeconfigs.sh \
+          ACCT_ID=$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
+
+          # Generate config.tar.gz
+          ${RgSRC}/makeconfigs-inplace.sh \
             ${CognitoUserPool} \
             ${CognitoUserPoolClient} \
             ${CFTBucketName} \
-            $$APPUSER \
-            $$APPUSERPWD \
-            $$RUNID \
+            "rguser" \
             ${RGUrl} \
-            $$REGION \
-            $$ROLE_NAME \
-            $$ACCT_ID \
+            ${AWS::Region} \
             ${HostedZoneId} \
             ${DocDBClusterRotationSecret}
-          # Copy generated config.tar.gz to working dir
-          cp config.tar.gz /home/ubuntu/config.tar.gz
-          # Continue with rest of setup
-          /home/ubuntu/updatescripts.sh
+
+          aws s3 cp config.tar.gz s3://${CFTBucketName}/
+
+          # Run setup scripts
+          rm -rf $RG_HOME/config
+          ${RgSRC}/updatescripts.sh
+
           fixconfigs.sh
-          fixdocdb.sh ${DBCluster.Endpoint} ${Environment}-cc rguser '$(aws secretsmanager get-secret-value --secret-id ${DocDBClusterRotationSecret} --region ${AWS::Region} --query SecretString --output text | jq -r .password)' ${RGUrl}
-          start_server.sh ${RGUrl} ${RGTargetGroupArn} 
+          fixdocdb.sh ${DBCluster.Endpoint} ${Environment}-cc rguser $(aws secretsmanager get-secret-value --secret-id ${DocDBClusterRotationSecret} --region ${AWS::Region} --query SecretString --output text | jq -r .password) ${RGUrl}
+          start_server.sh ${RGUrl} ${RGTargetGroupArn}
+
+          # --- Begin admin user creation ---
+          RG_HOME=/opt/deploy/sp2
+          baseurl=$(cat "$RG_HOME/config/config.json" | jq -r '.baseURL' | sed -e 's#/$##')
+          rgtoken=$(cat "$RG_HOME/config/notification-config.json" | jq -r '.tokenID[0]')
+
+          if [ -z "$baseurl" ]; then
+            echo "Base URL is not configured in config.json. Exiting"
+            exit 1
+          fi
+
+          TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          instanceid=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+          data="{\"username\":\"rgadmin\",\"first_name\":\"Admin\",\"last_name\":\"User\",\"email\":\"${AdminEmail}\",\"password\":\"RgAdmin@$instanceid\",\"level\":2}"
+
+          curl -c cookies.txt -X GET -H "Content-Type: application/json" -H "token:$token" $baseurl/user/signup
+          ctoken=$(awk '/XSRF-TOKEN/ {print $7}' cookies.txt)
+
+          message=$(curl -b cookies.txt --location --request POST -H "X-CSRF-Token:$ctoken" --header "token:$rgtoken" --header "Content-Type: application/json" --data-raw "$data" "$baseurl/user/signup" | jq -r '.message')
+          # --- End admin user creation ---
+
           /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource RGEC2Instance --region ${AWS::Region}
     CreationPolicy:
       ResourceSignal:
@@ -333,6 +389,7 @@ Resources:
       HostedRotationLambda:
         RotationType: MongoDBSingleUser
         RotationLambdaName: MongoDBSingleUser
+        # These should be lists of IDs/references
         VpcSecurityGroupIds:
            !Join [",", [!GetAtt DocumentDBSecurityGroup.GroupId]]
         VpcSubnetIds: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
