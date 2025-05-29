@@ -432,7 +432,7 @@ Resources:
       Role: !GetAtt "LambdaExecutionRole.Arn"
       MemorySize: 128
       Runtime: "nodejs18.x"
-      Timeout: 3
+      Timeout: 60
       TracingConfig:
         Mode: "PassThrough"
 
