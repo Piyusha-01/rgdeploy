@@ -123,9 +123,11 @@ Resources:
               - ec2:CopyImage
               - ec2:ModifyImageAttribute
               - ec2:CreateNetworkInterface
+              - ec2:ModifyInstanceMetadataOptions
               - elasticloadbalancing:RegisterTargets
               - sts:AssumeRole
               - kms:Decrypt
+              - kms:GenerateDataKey
             Resource: "*"
           - Sid: "RoleRelatedPermissions"
             Effect: Allow
@@ -197,16 +199,9 @@ Resources:
           chmod +x ${RgSRC}/updatescripts.sh
           chmod +x ${RgSRC}/makeconfigs-inplace.sh
 
-          # Download and extract scripts archive
-          aws s3 cp s3://${CFTBucketName}/scripts.tar.gz "${RgSRC}"
+          # Download and extract config archive
           aws s3 cp s3://${CFTBucketName}/config.tar.gz "${RgSRC}"
-
-          tar -xzvf ${RgSRC}/scripts.tar.gz -C ${RgSRC}
           tar -xzvf ${RgSRC}/config.tar.gz -C ${RgSRC}
-
-          # Fix up connect-db.sh
-          sed -i "s/secret_name/${DocDBClusterRotationSecret}/g" ${RgSRC}/scripts/connect-db.sh
-          chmod +x ${RgSRC}/scripts/connect-db.sh
 
           # Generate app user, password, and runid
           APPUSER="rguser"
@@ -238,12 +233,13 @@ Resources:
 
           fixconfigs.sh
           fixdocdb.sh ${DBCluster.Endpoint} ${Environment}-cc rguser $(aws secretsmanager get-secret-value --secret-id ${DocDBClusterRotationSecret} --region ${AWS::Region} --query SecretString --output text | jq -r .password) ${RGUrl}
+          chmod +x /usr/local/sbin/swarm_init.sh
           start_server.sh ${RGUrl} ${RGTargetGroupArn}
 
           # --- Begin admin user creation ---
           RG_HOME=/opt/deploy/sp2
           baseurl=$(cat "$RG_HOME/config/config.json" | jq -r '.baseURL' | sed -e 's#/$##')
-          rgtoken=$(cat "$RG_HOME/config/notification-config.json" | jq -r '.tokenID[0]')
+          token=$(cat "$RG_HOME/config/notification-config.json" | jq -r '.tokenID[0]')
 
           if [ -z "$baseurl" ]; then
             echo "Base URL is not configured in config.json. Exiting"
@@ -257,7 +253,7 @@ Resources:
           curl -c cookies.txt -X GET -H "Content-Type: application/json" -H "token:$token" $baseurl/user/signup
           ctoken=$(awk '/XSRF-TOKEN/ {print $7}' cookies.txt)
 
-          message=$(curl -b cookies.txt --location --request POST -H "X-CSRF-Token:$ctoken" --header "token:$rgtoken" --header "Content-Type: application/json" --data-raw "$data" "$baseurl/user/signup" | jq -r '.message')
+          message=$(curl -b cookies.txt --location --request POST -H "X-CSRF-Token:$ctoken" --header "token:$token" --header "Content-Type: application/json" --data-raw "$data" "$baseurl/user/signup" | jq -r '.message')
           # --- End admin user creation ---
 
           /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource RGEC2Instance --region ${AWS::Region}
