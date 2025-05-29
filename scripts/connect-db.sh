@@ -14,9 +14,9 @@ if [ -z "$myinput" ]; then
 	echo "Could not find DB details file. Exiting"
 	exit 1
 fi
-
-mydbuser=$(aws secretsmanager get-secret-value --secret-id secret_name  --version-stage AWSCURRENT | jq --raw-output .SecretString| jq -r ."username")
-mydbuserpwd=$(aws secretsmanager get-secret-value --secret-id secret_name  --version-stage AWSCURRENT | jq --raw-output .SecretString| jq -r ."password")
+mydbsecret=$(jq -r ".db_auth_config.secretName" "$RG_HOME/config/mongo-config.json")
+mydbuser=$(aws secretsmanager get-secret-value --secret-id "$mydbsecret"  --version-stage AWSCURRENT | jq --raw-output .SecretString| jq -r ."username")
+mydbuserpwd=$(aws secretsmanager get-secret-value --secret-id "$mydbsecret"  --version-stage AWSCURRENT | jq --raw-output .SecretString| jq -r ."password")
 
 if [ -z "$mydbuser" ] || [ -z "$mydbuserpwd" ]; then
 	echo "Could not find DB details. Exiting"

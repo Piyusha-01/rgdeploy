@@ -38,10 +38,10 @@ ac_name=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
   http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
 
 region=$6
-secret_arn=${12}
+secret_arn=${8}
 RG_HOME=$(mktemp -d -t "config.$myrunid.XXX")
 echo "RG_HOME=$RG_HOME"
-RG_SRC=$(pwd)
+[ -z "$RG_SRC" ] && RG_SRC='/home/ubuntu/rgdeploy'
 echo "RG_SRC=$RG_SRC"
 [ -z "$RG_ENV" ] && RG_ENV='PROD'
 echo "RG_ENV=$RG_ENV"
@@ -54,7 +54,7 @@ if [ -z "$ac_name" ]; then
 	[ -z "$ac_name" ] && echo "Error: Account Number is needed" && exit 1
 fi
 echo "Account number : $ac_name"
-r53_hosted_zone=${11}
+r53_hosted_zone=${7}
 generated_token=$(
 	date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 24
 	echo
