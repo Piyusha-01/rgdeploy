@@ -53,8 +53,17 @@ else
 fi
 echo "snsUrl will be set to $baseurl"
 
-# Modify the database to create roles and configs
-echo "Modifying database $1 to create defaults"
+if command -v mongosh >/dev/null 2>&1; then
+  mongo_cmd="mongosh"
+  echo "Using mongosh to connect..."
+elif command -v mongo >/dev/null 2>&1; then
+  mongo_cmd="mongo"
+  echo "Using mongo to connect..."
+else
+  echo "Error: Neither mongosh nor mongo is installed. Please install one of them to proceed."
+  exit 1
+fi
+
 if [ ! -f "$RG_SRC/dump.tar.gz" ]; then
 	echo "No seed DB in $RG_SRC."
 else
@@ -68,29 +77,20 @@ unzip -o "$RG_SRC/dump.zip" -d "$RG_SRC"
 if [ ! "$(ls -A $RG_SRC/dump)" ]; then
 	echo "Error: No files found in dump folder. Your database cannot be seeded."
 else
-	mongoimport --host "$mydocdburl:27017" --ssl \
-		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-		--username "$mydbuser" --password "$mydbuserpwd" \
-		--db "${mydbname}" --collection=standardcatalogitems --jsonArray\
-		"$RG_SRC/dump/standardcatalogitems.json"
-	mongoimport --host "$mydocdburl:27017" --ssl \
-		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-		--username "$mydbuser" --password "$mydbuserpwd" \
-		--db "${mydbname}" --collection=configs --jsonArray\
-		"$RG_SRC/dump/configs.json"
-	mongoimport --host "$mydocdburl:27017" --ssl \
-		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-		--username "$mydbuser" --password "$mydbuserpwd" \
-		--db "${mydbname}" --collection=studies --jsonArray\
-		"$RG_SRC/dump/studies.json"
-
+  for collection in standardcatalogitems configs studies; do
+    echo "Importing collection: $collection"
+    mongoimport --host "$mydocdburl:27017" --ssl \
+      --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+      --username "$mydbuser" --password "$mydbuserpwd" \
+      --db "$mydbname" --collection="$collection" --jsonArray \
+      "$RG_SRC/dump/$collection.json"
+  done
 fi
 
-if [ -z "$baseurl" ]; then
-	echo "WARNING: Base URL is not passed. Skipping snsUrl configuration in DB."
-else
-	mongo --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-		--username "$mydbuser" --password "$mydbuserpwd" <<EOF
+# Insert snsUrl into DB if URL was provided
+if [ -n "$baseurl" ]; then
+  $mongo_cmd --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+    --username "$mydbuser" --password "$mydbuserpwd" <<EOF
 use $mydbname
 db.configs.remove({"key":"snsUrl"});
 db.configs.insert({"key":"snsUrl","value":"$baseurl"});
@@ -98,16 +98,15 @@ EOF
 fi
 
 install_time=$(date -Is | base64 | tr -d '\n')
-rg_install_uid=$(cat /tmp/rg_install_uid)
-
+install_uid=$(uuidgen)
 echo "Adding simplified InstallationDetails to DB..."
-mongo --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+$mongo_cmd --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
   --username "$mydbuser" --password "$mydbuserpwd" <<EOF
 use $mydbname
 db.configs.remove({"key": "InstallationDetails"});
 db.configs.insert({
   "key": "InstallationDetails",
-  "value": ["$rg_install_uid", "$install_time"]
+  "value": ["$install_uid", "$install_time"]
 });
 EOF
 

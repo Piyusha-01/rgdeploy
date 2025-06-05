@@ -54,8 +54,6 @@ generated_token=$(
 	date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 24
 	echo
 )
-install_uid=$(uuidgen)
-echo "$install_uid" > /tmp/rg_install_uid
 
 echo "Generated token : $generated_token"
 if [ -z "$myurl" ]; then
@@ -98,7 +96,6 @@ jq -r ".baseURL=\"$baseurl\"" "$mytemp/config.json" |
 	jq -r ".AWSCognito.region=\"$region\"" |
 	jq -r ".sampleCSVBucketRegion=\"$region\"" |
 	jq -r ".enableB2CMode=false" >"${RG_HOME}/config/config.json"
-	jq -r --arg uid "$install_uid" '.MachineAddress = $uid' "$mytemp/config.json" > "${RG_HOME}/config/config.json"
 echo "Modifying snsConfig.json"
 if [ -z "$snsprotocol" ]; then
 	echo "WARNING: SNS protocol could not be determined. Did you pass in the correct RG URL?"
