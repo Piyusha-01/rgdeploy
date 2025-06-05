@@ -52,7 +52,7 @@ else
 	fi
 fi
 echo "snsUrl will be set to $baseurl"
-
+echo "Modifying database $1 to create defaults"
 if command -v mongosh >/dev/null 2>&1; then
   mongo_cmd="mongosh"
   echo "Using mongosh to connect..."
@@ -77,13 +77,21 @@ unzip -o "$RG_SRC/dump.zip" -d "$RG_SRC"
 if [ ! "$(ls -A $RG_SRC/dump)" ]; then
 	echo "Error: No files found in dump folder. Your database cannot be seeded."
 else
-  for collection in standardcatalogitems configs studies; do
-    echo "Importing collection: $collection"
-    mongoimport --host "$mydocdburl:27017" --ssl \
-      --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-      --username "$mydbuser" --password "$mydbuserpwd" \
-      --db "$mydbname" --collection="$collection" --jsonArray \
-      "$RG_SRC/dump/$collection.json"
+  	mongoimport --host "$mydocdburl:27017" --ssl \
+		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+		--username "$mydbuser" --password "$mydbuserpwd" \
+		--db "${mydbname}" --collection=standardcatalogitems --jsonArray\
+		"$RG_SRC/dump/standardcatalogitems.json"
+	mongoimport --host "$mydocdburl:27017" --ssl \
+		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+		--username "$mydbuser" --password "$mydbuserpwd" \
+		--db "${mydbname}" --collection=configs --jsonArray\
+		"$RG_SRC/dump/configs.json"
+	mongoimport --host "$mydocdburl:27017" --ssl \
+		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+		--username "$mydbuser" --password "$mydbuserpwd" \
+		--db "${mydbname}" --collection=studies --jsonArray\
+		"$RG_SRC/dump/studies.json"
   done
 fi
 
