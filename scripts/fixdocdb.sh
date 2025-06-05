@@ -92,7 +92,6 @@ else
 		--username "$mydbuser" --password "$mydbuserpwd" \
 		--db "${mydbname}" --collection=studies --jsonArray\
 		"$RG_SRC/dump/studies.json"
-  done
 fi
 
 # Insert snsUrl into DB if URL was provided
