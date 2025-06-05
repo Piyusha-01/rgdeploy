@@ -97,6 +97,20 @@ db.configs.insert({"key":"snsUrl","value":"$baseurl"});
 EOF
 fi
 
+install_time=$(date -Is | base64 | tr -d '\n')
+rg_install_uid=$(cat /tmp/rg_install_uid)
+
+echo "Adding simplified InstallationDetails to DB..."
+mongo --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
+  --username "$mydbuser" --password "$mydbuserpwd" <<EOF
+use $mydbname
+db.configs.remove({"key": "InstallationDetails"});
+db.configs.insert({
+  "key": "InstallationDetails",
+  "value": ["$rg_install_uid", "$install_time"]
+});
+EOF
+
 # rootca="${RG_HOME}/config/rootCA.key"
 # rlca="${RG_HOME}/config/RL-CA.pem"
 # mongodbkey="${RG_HOME}/config/mongodb.key"
