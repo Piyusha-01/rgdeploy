@@ -18,8 +18,7 @@ fi
 # If user is using DocumentDB, it also means we are not using local mongodb.
 # So disable the mongod service
 
-systemctl disable mongod
-service mongod stop
+
 # Fetch IMDSv2 session token
 TOKEN=$(wget --method=PUT --header="X-aws-ec2-metadata-token-ttl-seconds: 21600" -qO- http://169.254.169.254/latest/api/token)
 myip=$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/meta-data/local-ipv4)
@@ -36,6 +35,13 @@ echo "RG_SRC=$RG_SRC"
 [ -z "$S3_SOURCE" ] && S3_SOURCE=rg-deployment-docs
 echo "S3_SOURCE=$S3_SOURCE"
 
+systemctl disable mongod 2>/dev/null
+service mongod stop 2>/dev/null
+
+# URL-encode the password to handle special chars
+encoded_pwd=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$mydbuserpwd'''))")
+
+# Setup baseurl for SNS callback
 if [ -z "$myurl" ]; then
 	if [ -z "$public_host_name" ]; then
 		echo "ERROR: No RG URL passed. Instance does not have public hostname. One of the two is required. Not modifying configs."
@@ -79,7 +85,7 @@ if [ ! "$(ls -A $RG_SRC/dump)" ]; then
 else
   	mongoimport --host "$mydocdburl:27017" --ssl \
 		--sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-		--username "$mydbuser" --password "$mydbuserpwd" \
+                --username "$mydbuser" --password "$mydbuserpwd" \
 		--db "${mydbname}" --collection=standardcatalogitems --jsonArray\
 		"$RG_SRC/dump/standardcatalogitems.json"
 	mongoimport --host "$mydocdburl:27017" --ssl \
@@ -96,22 +102,20 @@ fi
 
 # Insert snsUrl into DB if URL was provided
 if [ -n "$baseurl" ]; then
-  $mongo_cmd --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-    --username "$mydbuser" --password "$mydbuserpwd" <<EOF
+  $mongo_cmd "mongodb://$mydbuser:$encoded_pwd@$mydocdburl:27017/$mydbname?retryWrites=false&tls=true&authMechanism=SCRAM-SHA-1" --tlsCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" <<EOF
 use $mydbname
-db.configs.remove({"key":"snsUrl"});
-db.configs.insert({"key":"snsUrl","value":"$baseurl"});
+db.configs.deleteMany({"key":"snsUrl"});
+db.configs.insertOne({"key":"snsUrl","value":"$baseurl"});
 EOF
 fi
 
 install_time=$(date -Is | base64 | tr -d '\n')
 install_uid=$(uuidgen)
 echo "Adding simplified InstallationDetails to DB..."
-$mongo_cmd --ssl --host "$mydocdburl:27017" --sslCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" \
-  --username "$mydbuser" --password "$mydbuserpwd" <<EOF
+$mongo_cmd "mongodb://$mydbuser:$encoded_pwd@$mydocdburl:27017/$mydbname?retryWrites=false&tls=true&authMechanism=SCRAM-SHA-1" --tlsCAFile "$RG_HOME/config/rds-combined-ca-bundle.pem" <<EOF
 use $mydbname
-db.configs.remove({"key": "InstallationDetails"});
-db.configs.insert({
+db.configs.deleteMany({"key": "InstallationDetails"});
+db.configs.insertOne({
   "key": "InstallationDetails",
   "value": ["$install_uid", "$install_time"]
 });
