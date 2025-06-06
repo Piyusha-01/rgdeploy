@@ -54,6 +54,7 @@ generated_token=$(
 	date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 24
 	echo
 )
+
 echo "Generated token : $generated_token"
 if [ -z "$myurl" ]; then
 	echo "ERROR: No RG URL passed. Exiting."
