@@ -23,10 +23,11 @@
 
 set -e
 
-# Parse arguments
+# Parse input arguments
 while [[ $# -gt 0 ]]; do
   key="$1"
   case $key in
+    --rg-src) RG_SRC="$2"; shift; shift ;;
     --ami-id) AMI_ID="$2"; shift; shift ;;
     --bucket-name) BUCKET_NAME="$2"; shift; shift ;;
     --vpc-id) VPC_ID="$2"; shift; shift ;;
@@ -41,37 +42,55 @@ while [[ $# -gt 0 ]]; do
     --rg-url) RG_URL="$2"; shift; shift ;;
     --certificate-arn) CERT_ARN="$2"; shift; shift ;;
     --region) REGION="$2"; shift; shift ;;
-    *) echo "Unknown option $1"; exit 1 ;;
+    --hostedzoneid) HOSTED_ZONE_ID="$2"; shift; shift ;;
+    --base-account-policy-name) BASE_POLICY_NAME="$2"; shift; shift ;;
+    --admin-email) ADMIN_EMAIL="$2"; shift; shift ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
 
-if [[ -z "$AMI_ID" || -z "$BUCKET_NAME" || -z "$VPC_ID" || -z "$PUBLIC_SUBNET_1" || -z "$PUBLIC_SUBNET_2" || -z "$PUBLIC_SUBNET_3" || -z "$PRIVATE_SUBNET_1" || -z "$PRIVATE_SUBNET_2" || -z "$PRIVATE_SUBNET_3" || -z "$KEYPAIR_NAME" || -z "$ENVIRONMENT" || -z "$RG_URL" || -z "$REGION" ]]; then
-  echo "Missing required parameters."
-  exit 1
-fi
+# Validate all required parameters
+REQUIRED_VARS=(
+  RG_SRC AMI_ID BUCKET_NAME VPC_ID PUBLIC_SUBNET_1 PUBLIC_SUBNET_2 PUBLIC_SUBNET_3
+  PRIVATE_SUBNET_1 PRIVATE_SUBNET_2 PRIVATE_SUBNET_3 KEYPAIR_NAME ENVIRONMENT
+  RG_URL CERT_ARN REGION HOSTED_ZONE_ID BASE_POLICY_NAME ADMIN_EMAIL
+)
 
-STACK_NAME="RG-PortalStack-ALL-$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 4)"
+for var in "${REQUIRED_VARS[@]}"; do
+  if [[ -z "${!var}" ]]; then
+    echo "Missing required parameter: $var"
+    exit 1
+  fi
+done
 
-echo "Packaging and deploying unified Research Gateway stack: $STACK_NAME"
+# Generate a unique stack name
+STACK_NAME="RG-PortalStack-ALL-$(date +%s | sha256sum | base64 | tr -dc 'a-z0-9' | head -c 8)"
 
+echo "Deploying Research Gateway stack: $STACK_NAME in region: $REGION"
+
+# Deploy using AWS CloudFormation
 aws cloudformation deploy \
   --template-file rgdeploy-cft.yml \
   --stack-name "$STACK_NAME" \
   --region "$REGION" \
   --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
   --parameter-overrides \
-      AMIId="$AMI_ID" \
-      CFTBucketName="$BUCKET_NAME" \
-      VPC="$VPC_ID" \
-      PublicSubnet1="$PUBLIC_SUBNET_1" \
-      PublicSubnet2="$PUBLIC_SUBNET_2" \
-      PublicSubnet3="$PUBLIC_SUBNET_3" \
-      PrivateSubnet1="$PRIVATE_SUBNET_1" \
-      PrivateSubnet2="$PRIVATE_SUBNET_2" \
-      PrivateSubnet3="$PRIVATE_SUBNET_3" \
-      KeyPairName="$KEYPAIR_NAME" \
-      Environment="$ENVIRONMENT" \
-      RGUrl="$RG_URL" \
-      CertificateArn="$CERT_ARN"
+    RgSRC="$RG_SRC" \
+    AMIId="$AMI_ID" \
+    CFTBucketName="$BUCKET_NAME" \
+    VPC="$VPC_ID" \
+    PublicSubnet1="$PUBLIC_SUBNET_1" \
+    PublicSubnet2="$PUBLIC_SUBNET_2" \
+    PublicSubnet3="$PUBLIC_SUBNET_3" \
+    PrivateSubnet1="$PRIVATE_SUBNET_1" \
+    PrivateSubnet2="$PRIVATE_SUBNET_2" \
+    PrivateSubnet3="$PRIVATE_SUBNET_3" \
+    KeyPairName="$KEYPAIR_NAME" \
+    Environment="$ENVIRONMENT" \
+    RGUrl="$RG_URL" \
+    CertificateArn="$CERT_ARN" \
+    HostedZoneId="$HOSTED_ZONE_ID" \
+    BaseAccountPolicyName="$BASE_POLICY_NAME" \
+    AdminEmail="$ADMIN_EMAIL"
 
-echo "Deployment initiated. Monitor stack progress in the AWS CloudFormation console."
+echo "Deployment initiated. Monitor the progress in AWS CloudFormation Console."
