@@ -15,6 +15,8 @@ done
 # Check required parameters
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <amiid> <bucketname>"
+    echo '       Param 1:  The AMI from which the EC2 for Research Gateway should be created'
+	echo '       Param 2:  The S3 bucket to create for holding the CFT templates'
     exit 1
 fi
 
@@ -92,36 +94,15 @@ rm -f pre_verification_custom_message.zip post_verification_send_message.zip
 
 # Upload Image Builder products
 cd "$localhome"/products || exit
-tar -czf nextflow-advanced.tar.gz Nextflow-Advanced/*
-aws s3 cp nextflow-advanced.tar.gz s3://"$bucketname/"
-rm -f nextflow-advanced.tar.gz
-
-tar -czf rstudio.tar.gz RStudio/*
-aws s3 cp rstudio.tar.gz s3://"$bucketname/"
-rm -f rstudio.tar.gz
 
 tar -czf nicedcv.tar.gz Nicedcv/*
 aws s3 cp nicedcv.tar.gz s3://"$bucketname/"
 rm -f nicedcv.tar.gz
 
-tar -czf Rhelnicedcv.tar.gz Rhelnicedcv/*
-aws s3 cp Rhelnicedcv.tar.gz s3://"$bucketname/"
-rm -f Rhelnicedcv.tar.gz
 
 zip -r ec2-winsecure-image.zip ec2-secure-windows/*
 aws s3 cp ec2-winsecure-image.zip s3://"$bucketname/"
 rm -f ec2-winsecure-image.zip
-
-# Upload PCluster files
-cd "$localhome" || exit
-cp ./PCluster/machine-images/config/infra/files/pcluster/slurm-main.yaml ./PCluster/machine-images/config/infra/files/pcluster/slurm.yaml
-cp ./PCluster/machine-images/config/infra/files/pcluster/batch-main.yaml ./PCluster/machine-images/config/infra/files/pcluster/batch.yaml
-sed -i "s/tempbucket/$bucketname/g" ./PCluster/machine-images/config/infra/files/pcluster/*.yaml
-tar -czf PCluster.tar.gz PCluster/*
-aws s3 cp PCluster.tar.gz s3://"$bucketname/"
-rm -f ./PCluster/machine-images/config/infra/files/pcluster/slurm.yaml
-rm -f ./PCluster/machine-images/config/infra/files/pcluster/batch.yaml
-rm -f PCluster.tar.gz
 
 # Upload dump data
 zip dump.zip dump/*
@@ -133,4 +114,4 @@ echo "✅ All files uploaded successfully to s3://$bucketname"
 exit 0
 
 
-# ./upload-assets.sh ami-0f78b782bf5ef10a6 single-cft-test-s3
+# ./upload-assets.sh ami-0f78b782bj5ef10a6 single-cft-test-s3
