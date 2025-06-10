@@ -7,9 +7,8 @@ This guide describes how to deploy the Research Gateway application using the ne
 ## Overview
 
 - **Single CFT**: All AWS resources are created by a single CloudFormation template (`rgdeploy-cft.yml`).
-- **External ALB Integration**: The template accepts an existing ALB and Target Group ARN as parameters.
-- **Automated Configuration**: The EC2 instance generates its configuration at launch using `makeconfigs.sh`, with parameters derived from stack outputs.
-- **Wrapper Script**: The `rgdeploy.sh` script wraps the deployment, handling parameter passing and stack creation.
+- **Automated Configuration**: The EC2 instance generates its configuration at launch using `makeconfigs-inplace.sh`, with parameters derived from stack outputs.
+- **Asset Upload script**: The `upload-assets.sh` script creates and uploads all the assests required to deploy single CFT.
 
 ---
 
@@ -17,19 +16,17 @@ This guide describes how to deploy the Research Gateway application using the ne
 
 1. **AWS Account** with sufficient permissions to create VPC, EC2, IAM, Cognito, DocumentDB, S3, and related resources.
 2. **VPC and Subnets**: You must have an existing VPC with at least 3 public and 3 private subnets.
-3. **Application Load Balancer**: An existing ALB with its ARN available.
-4. **Target Group**: An existing Target Group with its ARN available.
-5. **ACM Certificate** (optional): For SSL, create or import a certificate in AWS Certificate Manager.
-6. **AWS CLI**: Installed and configured (`aws configure`).
-7. **jq**: Installed on your local machine and available in the EC2 AMI.
-8. **S3 Bucket**: A bucket to store deployment scripts and configuration files.
-9. **Scripts**: Ensure the following files are uploaded to your S3 bucket:
-    - `makeconfigs.sh`
+3. **ACM Certificate** (optional): For SSL, create or import a certificate in AWS Certificate Manager.
+4. **AWS CLI**: Installed and configured (`aws configure`).
+5. **jq**: Installed on your local machine and available in the EC2 AMI.
+6. **S3 Bucket**: A bucket to store deployment scripts and configuration files.
+7. **Scripts**: Ensure the following files are uploaded to your S3 bucket:
+    - `makeconfigs-inplace.sh`
     - `updatescripts.sh`
     - `post_verification_send_message.zip`
     - `pre_verification_custom_message.zip`
     - Any other scripts referenced in UserData or by the application
-10. **CloudFormation Template**: `rgdeploy-cft.yml` must be present in your working directory.
+8. **CloudFormation Template**: `rgdeploy-cft.yml` must be present in your working directory.
 
 ---
 
@@ -38,7 +35,7 @@ This guide describes how to deploy the Research Gateway application using the ne
 1. **Upload Scripts to S3**
 
    ```bash
-   aws s3 cp makeconfigs.sh s3://<your-bucket>/
+   aws s3 cp makeconfigs-inplace.sh s3://<your-bucket>/
    aws s3 cp updatescripts.sh s3://<your-bucket>/
    # Upload any other required scripts
    ```
@@ -62,10 +59,8 @@ Gather the following information
 | `KeyPairName`               | Name of the EC2 Key Pair used for SSH access                           |
 | `Environment`               | Deployment environment (`DEV`, `QA`, `STAGE`, `PROD`)                  |
 | `RGUrl`                     | Research Gateway URL (e.g., `https://myrg.example.com`)                |
-| `RGApplicationLoadBalancer` | ARN of the existing Application Load Balancer                          |
 | `CertificateArn`            | ARN of the ACM Certificate (optional; used for enabling SSL/TLS)       |
 | `HostedZoneId`              | Route 53 Hosted Zone ID for domain name configuration                  |
-| `RGTargetGroupArn`          | ARN of the existing Target Group for load balancing                    |
 | `BaseAccountPolicyName`     | Name of the base IAM policy for RG Portal accounts                     |
 | `AdminEmail`                | Email address of the initial administrator user                        |
 | `region`                    | AWS region where the stack will be deployed                            |
@@ -94,8 +89,6 @@ Replace all values in angle brackets (`<...>`) with your actual configuration.
   --keypair <KEYPAIR_NAME> \
   --env <ENV> \
   --rg-url <RG_URL> \
-  --alb-arn <ALB_ARN> \
-  --target-group-arn <TARGET_GROUP_ARN> \
   --certificate-arn <CERT_ARN> \
   --region <AWS_REGION> \
   --hostedzoneid <ROUTE53_HOSTED_ZONE_ID> \
@@ -110,11 +103,12 @@ Replace all values in angle brackets (`<...>`) with your actual configuration.
 Below is a sample deployment command with example values.
 
 ```bash
+
 ./rgdeploy.sh \
   --rg-src /home/ubuntu/rgdeploy \
-  --ami-id ami-0abcdef1234567890 \
-  --bucket-name my-rgdeploy-bucket \
-  --vpc-id vpc-0123456789abcdef0 \
+  --ami-id ami-0abc123def4567890 \
+  --bucket-name my-deployment-bucket \
+  --vpc-id vpc-0123abcd4567efgh8 \
   --public-subnet-1 subnet-aaa111bbb222ccc33 \
   --public-subnet-2 subnet-bbb222ccc333ddd44 \
   --public-subnet-3 subnet-ccc333ddd444eee55 \
@@ -124,12 +118,10 @@ Below is a sample deployment command with example values.
   --keypair my-ec2-keypair \
   --env DEV \
   --rg-url https://myrg.example.com \
-  --alb-arn arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188 \
-  --target-group-arn arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-tg/6d0ecf831eec9f09 \
-  --certificate-arn arn:aws:acm:us-east-1:123456789012:certificate/abcd1234-abcd-1234-abcd-1234abcd1234 \
+  --certificate-arn arn:aws:acm:us-east-1:123456789012:certificate/abcd-1234 \
   --region us-east-1 \
   --hostedzoneid Z3P5QSUBK4POTI \
-  --base-account-policy-name RG-Base-Account-Policy \
+  --base-account-policy-name RG-Base-Policy \
   --admin-email admin@example.com
 ```
 

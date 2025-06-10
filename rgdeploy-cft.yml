@@ -4,7 +4,6 @@ Description: >
   Unified CloudFormation Template for Research Gateway.
   Provisions ALB, Cognito, DocumentDB, EC2, and all required resources in a single stack.
   VPC and subnets must be created externally and passed as parameters.
-  This template now accepts an existing Target Group ARN as a parameter.
 
 Parameters:
   RgSRC:
@@ -48,18 +47,12 @@ Parameters:
   RGUrl:
     Description: URL at which Research Gateway will be accessed
     Type: String
-  RGApplicationLoadBalancer:
-    Type: String
-    Description: "ARN of the existing Application Load Balancer"
   CertificateArn:
     Description: ACM Certificate ARN for SSL (optional)
     Type: String
     Default: ""
   HostedZoneId:
     Description: Route53 Hosted Zone ID for the RG domain (required for config generation)
-    Type: String
-  RGTargetGroupArn:
-    Description: The ARN of the existing Target Group for the Research Gateway EC2 instance
     Type: String
   BaseAccountPolicyName:
     Description: Name for RG Portal Base Account Policy
@@ -80,6 +73,102 @@ Conditions:
       - ""
 
 Resources:
+
+  RGInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http/https/ssh to client host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0  
+          
+
+  RGApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${Environment}-rg-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+        - !Ref PublicSubnet3
+      SecurityGroups:
+        - !Ref RGInstanceSecurityGroup
+      IpAddressType: ipv4
+
+  RGTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-rg-target"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: "200"
+
+  RGHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: DoNotUseSSL
+    Properties:
+      LoadBalancerArn: !Ref RGApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref RGTargetGroup
+
+  RGHTTPRedirectListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseSSL
+    Properties:
+      LoadBalancerArn: !Ref RGApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: "443"
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: HTTP_301
+
+  RGHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseSSL
+    Properties:
+      LoadBalancerArn: !Ref RGApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-2016-08
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref RGTargetGroup
+
   # Portal IAM Role
   RGPortalRole:
     Type: AWS::IAM::Role
@@ -147,119 +236,132 @@ Resources:
               - iam:UpdateAssumeRolePolicy
             Resource: 
               - "arn:aws:iam::*:policy/RG-Cross-Account-Policy*"
+  DnsRecord:
+      Type: AWS::Route53::RecordSet
+      Properties:
+        HostedZoneId: !Ref HostedZoneId
+        Name: !Select [2, !Split ["/", !Ref RGUrl]]
+        Type: A
+        AliasTarget:
+          DNSName: !GetAtt RGApplicationLoadBalancer.DNSName
+          HostedZoneId: !GetAtt RGApplicationLoadBalancer.CanonicalHostedZoneID
 
   # EC2 Instance for Research Gateway Portal
   RGEC2Instance:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: !Ref AMIId
-      InstanceType: t3.large
-      Monitoring: "true"
-      DisableApiTermination: "false"
-      IamInstanceProfile: !Ref ResearchGatewayInstanceProfile
-      KeyName: !Ref KeyPairName
-      BlockDeviceMappings:
-        - DeviceName: /dev/sda1
-          Ebs:
-            VolumeType: gp2
-            VolumeSize: "80"
-            DeleteOnTermination: "true"
-            Encrypted: "true"
-      SubnetId: !Ref PrivateSubnet1
-      SecurityGroupIds:
-        - !Ref RGInstanceSecurityGroup
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+      Type: AWS::EC2::Instance
+      DependsOn: DnsRecord
+      Properties:
+        ImageId: !Ref AMIId
+        InstanceType: t3.large
+        Monitoring: true
+        DisableApiTermination: false
+        IamInstanceProfile: !Ref ResearchGatewayInstanceProfile
+        KeyName: !Ref KeyPairName
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeType: gp2
+              VolumeSize: 80
+              DeleteOnTermination: true
+              Encrypted: true
+        SubnetId: !Ref PrivateSubnet1
+        SecurityGroupIds:
+          - !Ref RGInstanceSecurityGroup
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/bin/bash
+              exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-          export RG_HOME=/opt/deploy/sp2
-          export RG_ENV=${Environment}
-          export RG_SRC=/home/ubuntu/rgdeploy
-          export S3_SOURCE="${CFTBucketName}"
-          export REGION=${AWS::Region}
-          
-          mkdir -p ${RgSRC}
+              export RG_HOME=/opt/deploy/sp2
+              export RG_ENV=${Environment}
+              export RG_SRC=${RgSRC}
+              export S3_SOURCE="${CFTBucketName}"
+              export REGION=${AWS::Region}
 
-          # Install dependencies (Ubuntu-based)
-          apt-get update
-          apt-get install -y jq curl gnupg
+              mkdir -p ${RgSRC}
+              apt-get update
+              apt-get install -y jq curl gnupg
 
-          # Install MongoDB mongosh (v8.0 for Ubuntu 24.04)
-          wget -qO- https://www.mongodb.org/static/pgp/server-8.0.asc | tee /etc/apt/trusted.gpg.d/server-8.0.asc
-          echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-8.0.list
-          apt-get update
-          apt-get install -y mongodb-mongosh
-          mongosh --version
+              wget -qO- https://www.mongodb.org/static/pgp/server-8.0.asc | tee /etc/apt/trusted.gpg.d/server-8.0.asc
+              echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+              apt-get update
+              apt-get install -y mongodb-mongosh
 
+              mongosh --version
 
-          # Download required scripts
-          aws s3 cp s3://${CFTBucketName}/updatescripts.sh ${RgSRC}
-          aws s3 cp s3://${CFTBucketName}/makeconfigs-inplace.sh ${RgSRC}
-          chmod +x ${RgSRC}/updatescripts.sh
-          chmod +x ${RgSRC}/makeconfigs-inplace.sh
+              aws s3 cp s3://${CFTBucketName}/updatescripts.sh ${RgSRC}
+              aws s3 cp s3://${CFTBucketName}/makeconfigs-inplace.sh ${RgSRC}
+              chmod +x ${RgSRC}/updatescripts.sh
+              chmod +x ${RgSRC}/makeconfigs-inplace.sh
 
-          # Download and extract config archive
-          aws s3 cp s3://${CFTBucketName}/config.tar.gz "${RgSRC}"
-          tar -xzvf ${RgSRC}/config.tar.gz -C ${RgSRC}
+              aws s3 cp s3://${CFTBucketName}/config.tar.gz ${RgSRC}
+              tar -xzvf ${RgSRC}/config.tar.gz -C ${RgSRC}
 
-          # Generate app user, password, and runid
-          APPUSER="rguser"
-          APPUSERPWD=$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 24)
-          RUNID=$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 4)
+              APPUSER="rguser"
+              APPUSERPWD=$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 24)
+              RUNID=$(date +%s | sha256sum | base64 | tr -dc _a-z-0-9 | head -c 4)
 
-          TOKEN=$(wget --method=PUT --header="X-aws-ec2-metadata-token-ttl-seconds: 21600" -qO- http://169.254.169.254/latest/api/token)
-          # Get instance role name
-          ROLE_NAME="$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/meta-data/iam/security-credentials/)"
-          # Get account number
-          ACCT_ID=$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
+              TOKEN=$(wget --method=PUT --header="X-aws-ec2-metadata-token-ttl-seconds: 21600" -qO- http://169.254.169.254/latest/api/token)
+              ROLE_NAME="$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/meta-data/iam/security-credentials/)"
+              ACCT_ID=$(wget --header="X-aws-ec2-metadata-token: $TOKEN" -qO- http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .accountId)
 
-          # Generate config.tar.gz
-          ${RgSRC}/makeconfigs-inplace.sh \
-            ${CognitoUserPool} \
-            ${CognitoUserPoolClient} \
-            ${CFTBucketName} \
-            "rguser" \
-            ${RGUrl} \
-            ${AWS::Region} \
-            ${HostedZoneId} \
-            ${DocDBClusterRotationSecret}
+              ${RgSRC}/makeconfigs-inplace.sh \
+                ${CognitoUserPool} \
+                ${CognitoUserPoolClient} \
+                ${CFTBucketName} \
+                "rguser" \
+                ${RGUrl} \
+                ${AWS::Region} \
+                ${HostedZoneId} \
+                ${DocDBClusterRotationSecret}
 
-          aws s3 cp config.tar.gz s3://${CFTBucketName}/
+              aws s3 cp config.tar.gz s3://${CFTBucketName}/
 
-          # Run setup scripts
-          rm -rf $RG_HOME/config
-          ${RgSRC}/updatescripts.sh
+              rm -rf $RG_HOME/config
+              ${RgSRC}/updatescripts.sh
 
-          fixconfigs.sh
-          fixdocdb.sh ${DBCluster.Endpoint} ${Environment}-cc rguser $(aws secretsmanager get-secret-value --secret-id ${DocDBClusterRotationSecret} --region ${AWS::Region} --query SecretString --output text | jq -r .password) ${RGUrl}
-          chmod +x /usr/local/sbin/swarm_init.sh
-          start_server.sh ${RGUrl} ${RGTargetGroupArn}
+              fixconfigs.sh
+              fixdocdb.sh ${DBClusterEndpoint} ${Environment}-cc rguser $(aws secretsmanager get-secret-value --secret-id ${DocDBClusterRotationSecret} --region ${AWS::Region} --query SecretString --output text | jq -r .password) ${RGUrl}
 
-          # --- Begin admin user creation ---
-          RG_HOME=/opt/deploy/sp2
-          baseurl=$(cat "$RG_HOME/config/config.json" | jq -r '.baseURL' | sed -e 's#/$##')
-          token=$(cat "$RG_HOME/config/notification-config.json" | jq -r '.tokenID[0]')
+              chmod +x /usr/local/sbin/swarm_init.sh
+              start_server.sh ${RGUrl} ${RGTargetGroupArn}
 
-          if [ -z "$baseurl" ]; then
-            echo "Base URL is not configured in config.json. Exiting"
-            exit 1
-          fi
+              RG_HOME=/opt/deploy/sp2
+              baseurl=$(cat "$RG_HOME/config/config.json" | jq -r '.baseURL' | sed -e 's#/$##')
+              token=$(cat "$RG_HOME/config/notification-config.json" | jq -r '.tokenID[0]')
 
-          TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-          instanceid=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-          data="{\"username\":\"rgadmin\",\"first_name\":\"Admin\",\"last_name\":\"User\",\"email\":\"${AdminEmail}\",\"password\":\"RgAdmin@$instanceid\",\"level\":2}"
+              if [ -z "$baseurl" ]; then
+                echo "Base URL is not configured in config.json. Exiting"
+                exit 1
+              fi
 
-          curl -c cookies.txt -X GET -H "Content-Type: application/json" -H "token:$token" $baseurl/user/signup
-          ctoken=$(awk '/XSRF-TOKEN/ {print $7}' cookies.txt)
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              instanceid=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+              data="{\"username\":\"rgadmin\",\"first_name\":\"Admin\",\"last_name\":\"User\",\"email\":\"${AdminEmail}\",\"password\":\"RgAdmin@$instanceid\",\"level\":2}"
 
-          message=$(curl -b cookies.txt --location --request POST -H "X-CSRF-Token:$ctoken" --header "token:$token" --header "Content-Type: application/json" --data-raw "$data" "$baseurl/user/signup" | jq -r '.message')
-          # --- End admin user creation ---
+              curl -c cookies.txt -X GET -H "Content-Type: application/json" -H "token:$token" $baseurl/user/signup
+              ctoken=$(awk '/XSRF-TOKEN/ {print $7}' cookies.txt)
 
-          /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource RGEC2Instance --region ${AWS::Region}
-    CreationPolicy:
-      ResourceSignal:
-        Timeout: PT9M
+              message=$(curl -b cookies.txt --location --request POST -H "X-CSRF-Token:$ctoken" --header "token:$token" --header "Content-Type: application/json" --data-raw "$data" "$baseurl/user/signup" | jq -r '.message')
+
+              /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource RGEC2Instance --region ${AWS::Region}
+            - RGTargetGroupArn: !GetAtt RGTargetGroup.TargetGroupArn
+              Environment: !Ref Environment
+              RgSRC: !Ref RgSRC
+              RGUrl: !Ref RGUrl
+              CFTBucketName: !Ref CFTBucketName
+              CognitoUserPool: !Ref CognitoUserPool
+              CognitoUserPoolClient: !Ref CognitoUserPoolClient
+              HostedZoneId: !Ref HostedZoneId
+              DocDBClusterRotationSecret: !Ref DocDBClusterRotationSecret
+              DBClusterEndpoint: !GetAtt DBCluster.Endpoint
+              AdminEmail: !Ref AdminEmail
+
+              
+      CreationPolicy:
+        ResourceSignal:
+          Timeout: PT9M
 
   DocumentDBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -745,91 +847,6 @@ Resources:
       SourceArn:
         Fn::Sub: arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPool}
 
-  RGInstanceSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow http/https/ssh to client host
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
-      SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
-
-  # Application Load Balancer
-  # RGApplicationLoadBalancer:
-  #   Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-  #   Properties:
-  #     Name: !Ref LoadBalancerName
-  #     Scheme: "internet-facing"
-  #     Type: "application"
-  #     Subnets:
-  #       - !Ref PublicSubnet1
-  #       - !Ref PublicSubnet2
-  #       - !Ref PublicSubnet3
-  #     SecurityGroups:
-  #       - !GetAtt RGInstanceSecurityGroup.GroupId
-  #     IpAddressType: "ipv4"
-
-  # Target Group - REMOVED: Assuming existing Target Group will be used via parameter
-
-  # HTTPS Listener (if CertificateArn provided)
-  # RGHTTPSListener:
-  #   Type: AWS::ElasticLoadBalancingV2::Listener
-  #   Condition: UseSSL
-  #   Properties:
-  #     LoadBalancerArn: !Ref RGApplicationLoadBalancer
-  #     Port: 443
-  #     Protocol: "HTTPS"
-  #     SslPolicy: "ELBSecurityPolicy-2016-08"
-  #     Certificates:
-  #       - CertificateArn: !Ref CertificateArn
-  #     DefaultActions:
-  #       - Order: 1
-  #         TargetGroupArn: !Ref RGTargetGroupArn # Updated reference here
-  #         Type: "forward"
-
-  # # HTTP Listener (redirect to HTTPS if SSL enabled)
-  # RGHTTPListener:
-  #   Type: AWS::ElasticLoadBalancingV2::Listener
-  #   Condition: UseSSL
-  #   Properties:
-  #     LoadBalancerArn: !Ref RGApplicationLoadBalancer
-  #     Port: 80
-  #     Protocol: "HTTP"
-  #     DefaultActions:
-  #       - Order: 1
-  #         RedirectConfig:
-  #           Protocol: "HTTPS"
-  #           Port: "443"
-  #           Host: "#{host}"
-  #           Path: "/#{path}"
-  #           Query: "#{query}"
-  #           StatusCode: "HTTP_301"
-  #         Type: "redirect"
-
-  # # HTTP Listener (no SSL)
-  # RGHTTPListener1:
-  #   Type: AWS::ElasticLoadBalancingV2::Listener
-  #   Condition: DoNotUseSSL
-  #   Properties:
-  #     DefaultActions:
-  #       - Type: "forward"
-  #         TargetGroupArn: !Ref RGTargetGroupArn # Updated reference here
-  #     Port: 80
-  #     Protocol: "HTTP"
-  #     LoadBalancerArn: !Ref RGApplicationLoadBalancer
 
 Outputs:
   ApplicationLoadBalancer:
@@ -840,4 +857,4 @@ Outputs:
     Value: !Ref RGInstanceSecurityGroup
   ResearchGatewayTargetGroupArn:
     Description: The ARN of the Target Group used by the stack
-    Value: !Ref RGTargetGroupArn
+    Value: !Ref RGTargetGroup
